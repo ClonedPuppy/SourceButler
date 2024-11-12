@@ -1,0 +1,112 @@
+﻿<Window x:Class="SourceButler.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:SourceButler"
+        xmlns:viewModels="clr-namespace:SourceButler.ViewModels"
+        mc:Ignorable="d"
+        Title="Source Butler" Height="600" Width="800"
+        WindowStartupLocation="CenterScreen">
+
+    <Window.DataContext>
+        <viewModels:MainViewModel/>
+    </Window.DataContext>
+
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="100"/>
+        </Grid.RowDefinitions>
+
+        <!-- Folder Selection -->
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox Text="{Binding RootDirectory, UpdateSourceTrigger=PropertyChanged}"
+                     IsReadOnly="True"
+                     Margin="0,0,10,0"/>
+            <Button Grid.Column="1"
+                    Content="Select Folder"
+                    Command="{Binding SelectFolderCommand}"
+                    Padding="10,5"/>
+        </Grid>
+
+        <!-- Main Content -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Folder Tree -->
+            <TreeView ItemsSource="{Binding FolderTree}">
+                <TreeView.ItemTemplate>
+                    <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                        <StackPanel Orientation="Horizontal">
+                            <CheckBox IsChecked="{Binding IsSelected}"
+                          VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding Name}"
+                           Margin="5,0,0,0"
+                           VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </HierarchicalDataTemplate>
+                </TreeView.ItemTemplate>
+                <TreeView.ItemContainerStyle>
+                    <Style TargetType="{x:Type TreeViewItem}">
+                        <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                    </Style>
+                </TreeView.ItemContainerStyle>
+            </TreeView>
+
+            <GridSplitter Grid.Column="1"
+                          Width="5"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Stretch"/>
+
+            <!-- File Extensions -->
+            <ListBox Grid.Column="2"
+         ItemsSource="{Binding FileExtensions}">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                      Content="{Binding DisplayText}"
+                      Command="{Binding DataContext.ToggleExtensionCommand, 
+                               RelativeSource={RelativeSource AncestorType=ListBox}}"
+                      CommandParameter="{Binding Extension}"/>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Grid>
+
+        <!-- Progress Bars -->
+        <StackPanel Grid.Row="2" Margin="0,10">
+            <TextBlock Text="Scan Progress:"/>
+            <ProgressBar Height="20"
+                         Value="{Binding ScanProgress}"
+                         Margin="0,5"/>
+            <TextBlock Text="Process Progress:"/>
+            <ProgressBar Height="20"
+                         Value="{Binding ProcessProgress}"
+                         Margin="0,5"/>
+            <Button Content="Process Files"
+                    Command="{Binding ProcessCommand}"
+                    HorizontalAlignment="Right"
+                    Padding="20,5"
+                    Margin="0,10,0,0"/>
+        </StackPanel>
+
+        <!-- Log Window -->
+        <TextBox Grid.Row="3"
+                 Text="{Binding LogText, Mode=TwoWay}"
+                 IsReadOnly="True"
+                 VerticalScrollBarVisibility="Auto"
+                 HorizontalScrollBarVisibility="Auto"
+                 FontFamily="Consolas"/>
+    </Grid>
+</Window>
