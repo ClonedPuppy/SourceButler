@@ -10,19 +10,23 @@ using System.Windows;
 using System.Windows.Input;
 using System.Collections.Generic;
 using System.Text;
+using System.Collections.Concurrent;
 
 namespace SourceButler.ViewModels
 {
     public class MainViewModel : INotifyPropertyChanged
     {
         private string rootDirectory = string.Empty;
+        private int totalFoldersToScan;
+        private int foldersScanned;
         private double scanProgress;
+        private readonly ConcurrentDictionary<string, bool> processedPaths = new();
         private double processProgress;
         private string logText = string.Empty;
         private bool isProcessing;
         private Configuration? currentConfig;
         private StringBuilder outputBuilder = new();
-        public static readonly string[] ExcludedFolders = new[] { ".git", ".github" };
+        public static readonly string[] ExcludedFolders = new[] { ".git", ".github", "node_modules" };
         private readonly Dictionary<string, HashSet<string>> extensionToFolderMap = new();
 
         public ObservableCollection<FileTreeItem> FolderTree { get; } = new();
@@ -148,12 +152,14 @@ namespace SourceButler.ViewModels
                 LogMessage($"Selected folders count: {currentConfig.SelectedFolders?.Count ?? 0}");
                 LogMessage($"Selected extensions count: {currentConfig.SelectedExtensions?.Count ?? 0}");
 
-                if (currentConfig.SelectedFolders?.Any() == true)
+                // Initialize SelectedExtensions from config before loading folder structure
+                SelectedExtensions = new HashSet<string>();
+                if (currentConfig?.SelectedExtensions != null)
                 {
-                    LogMessage("First few selected folders:");
-                    foreach (var folder in currentConfig.SelectedFolders.Take(3))
+                    foreach (var ext in currentConfig.SelectedExtensions)
                     {
-                        LogMessage($"- {folder}");
+                        SelectedExtensions.Add(ext.ToLowerInvariant());
+                        LogMessage($"Added extension from config: {ext}");
                     }
                 }
             }
@@ -178,19 +184,30 @@ namespace SourceButler.ViewModels
             FolderTree.Clear();
             FileExtensions.Clear();
             extensionToFolderMap.Clear();
+            processedPaths.Clear();
+            ScanProgress = 0;
 
             try
             {
-                var rootItem = await Task.Run(() => ScanDirectory(new DirectoryInfo(RootDirectory)));
-                SetInitialTreeState(rootItem);
-                FolderTree.Add(rootItem);
+                // First pass: Count total folders
+                totalFoldersToScan = await Task.Run(() => CountFoldersToScan(RootDirectory));
+                foldersScanned = 0;
+                LogMessage($"Found {totalFoldersToScan} folders to scan");
 
-                // Single UI update for extensions
-                Application.Current.Dispatcher.Invoke(() => UpdateExtensionsList());
+                // Second pass: Actual scanning
+                var rootItem = await Task.Run(() => ScanDirectory(new DirectoryInfo(RootDirectory)));
+
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    SetInitialTreeState(rootItem);
+                    FolderTree.Add(rootItem);
+                    UpdateExtensionsList();
+                    ScanProgress = 100; // Ensure we end at 100%
+                });
             }
             catch (Exception ex)
             {
-                LogMessage($"Error: {ex.Message}");
+                LogMessage($"Error during folder scan: {ex.Message}");
             }
             finally
             {
@@ -198,7 +215,27 @@ namespace SourceButler.ViewModels
             }
         }
 
-        // In UpdateExtensionsList method, modify the extension creation part
+        private int CountFoldersToScan(string rootPath)
+        {
+            try
+            {
+                var count = 1; // Count current directory
+                foreach (var dir in Directory.GetDirectories(rootPath))
+                {
+                    if (!ExcludedFolders.Contains(Path.GetFileName(dir)))
+                    {
+                        count += CountFoldersToScan(dir);
+                    }
+                }
+                return count;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error counting folders in {rootPath}: {ex.Message}");
+                return 0;
+            }
+        }
+
         private void UpdateExtensionsList()
         {
             var selectedFolders = GetSelectedFolderPaths();
@@ -217,18 +254,12 @@ namespace SourceButler.ViewModels
             {
                 var currentExtensions = FileExtensions.ToDictionary(ei => ei.Extension);
 
-                // Remove non-present extensions
+                // Remove extensions no longer present
                 foreach (var ei in FileExtensions.ToList())
                 {
                     if (!extensionsToShow.ContainsKey(ei.Extension))
                     {
                         FileExtensions.Remove(ei);
-                        // Only remove from SelectedExtensions if it's not in any selected folder
-                        if (!extensionToFolderMap[ei.Extension]
-                            .Any(folder => selectedFolders.Contains(folder)))
-                        {
-                            SelectedExtensions.Remove(ei.Extension);
-                        }
                     }
                 }
 
@@ -237,24 +268,49 @@ namespace SourceButler.ViewModels
                 {
                     if (currentExtensions.TryGetValue(ext.Key, out var existingItem))
                     {
+                        // Update existing item
                         existingItem.SelectedFolderCount = ext.Value;
                         existingItem.IsChecked = SelectedExtensions.Contains(ext.Key);
                     }
                     else
                     {
-                        // Add to SelectedExtensions by default if it's not already there
-                        if (!SelectedExtensions.Contains(ext.Key))
+                        // Create new item with correct checked state
+                        var isChecked = false;
+                        if (currentConfig?.SelectedExtensions != null)
+                        {
+                            // If we have a config, use it to determine checked state
+                            isChecked = currentConfig.SelectedExtensions.Contains(ext.Key);
+                        }
+                        else
+                        {
+                            // If no config, don't auto-select extensions
+                            isChecked = false;
+                        }
+
+                        // Ensure SelectedExtensions is synchronized
+                        if (isChecked)
                         {
                             SelectedExtensions.Add(ext.Key);
+                        }
+                        else
+                        {
+                            SelectedExtensions.Remove(ext.Key);
                         }
 
                         FileExtensions.Add(new ExtensionItem
                         {
                             Extension = ext.Key,
                             SelectedFolderCount = ext.Value,
-                            IsChecked = true  // Default to checked
+                            IsChecked = isChecked
                         });
                     }
+                }
+
+                var sortedExtensions = FileExtensions.OrderBy(x => x.Extension).ToList();
+                FileExtensions.Clear();
+                foreach (var ext in sortedExtensions)
+                {
+                    FileExtensions.Add(ext);
                 }
             });
         }
@@ -262,7 +318,6 @@ namespace SourceButler.ViewModels
         private void SetInitialTreeState(FileTreeItem item)
         {
             // Set state for current item
-            item.IsSelected = true;
             item.IsExpanded = true;
 
             // Recursively set state for all children
@@ -274,23 +329,29 @@ namespace SourceButler.ViewModels
 
         private FileTreeItem ScanDirectory(DirectoryInfo directory)
         {
-            // Changed logic for determining initial selection state
-            bool shouldSelect;
-            if (currentConfig == null)
+            if (!processedPaths.TryAdd(directory.FullName, true))
             {
-                shouldSelect = currentConfig.SelectedFolders?.Contains(directory.FullName) ?? false;
-                LogMessage($"Scanning directory: {directory.FullName}, Should select: {shouldSelect}");
-                //shouldSelect = true;
+                return new FileTreeItem(HandleFolderSelectionChanged)
+                {
+                    Name = directory.Name,
+                    FullPath = directory.FullName,
+                    IsDirectory = true
+                };
             }
-            else if (currentConfig.LastRootDirectory != RootDirectory)
+
+            bool shouldSelect = false;
+
+            if (currentConfig != null)
             {
-                // Different root directory - select everything
-                shouldSelect = true;
-            }
-            else
-            {
-                // Use configuration
-                shouldSelect = currentConfig.SelectedFolders.Contains(directory.FullName);
+                if (currentConfig.LastRootDirectory != RootDirectory)
+                {
+                    shouldSelect = false;
+                }
+                else
+                {
+                    shouldSelect = currentConfig.SelectedFolders.Contains(directory.FullName);
+                    //LogMessage($"Checking directory: {directory.FullName}, Selected: {shouldSelect}");
+                }
             }
 
             var item = new FileTreeItem(HandleFolderSelectionChanged)
@@ -299,24 +360,20 @@ namespace SourceButler.ViewModels
                 FullPath = directory.FullName,
                 IsDirectory = true,
                 IsSelected = shouldSelect,
-                IsExpanded = shouldSelect
+                IsExpanded = true
             };
 
             try
             {
+                // Process all directories first
                 foreach (var dir in directory.GetDirectories()
                     .Where(dir => !ExcludedFolders.Contains(dir.Name)))
                 {
                     var childItem = ScanDirectory(dir);
                     item.Children.Add(childItem);
-
-                    // Don't override child selection state from config
-                    if (shouldSelect && currentConfig == null)
-                    {
-                        childItem.IsSelected = true;
-                    }
                 }
 
+                // Process files in current directory
                 foreach (var file in directory.GetFiles())
                 {
                     var extension = file.Extension.ToLowerInvariant();
@@ -329,6 +386,10 @@ namespace SourceButler.ViewModels
                         extensionToFolderMap[extension].Add(directory.FullName);
                     }
                 }
+
+                // Update progress after processing each directory
+                Interlocked.Increment(ref foldersScanned);
+                UpdateScanProgress();
             }
             catch (Exception ex)
             {
@@ -338,42 +399,50 @@ namespace SourceButler.ViewModels
             return item;
         }
 
+        private void UpdateScanProgress()
+        {
+            if (totalFoldersToScan > 0)
+            {
+                var progress = (foldersScanned * 100.0) / totalFoldersToScan;
+                Application.Current.Dispatcher.Invoke(() =>
+                {
+                    ScanProgress = Math.Min(99, progress); // Cap at 99% until completely done
+                });
+            }
+        }
+
         private void HandleFolderSelectionChanged(FileTreeItem item, bool isSelected)
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
                 UpdateExtensionsList();
-                // We no longer clear selections here as it's handled in UpdateExtensionsList
             });
         }
         private void ToggleExtension(string extension)
         {
-            if (extension == null) return;
+            if (string.IsNullOrEmpty(extension)) return;
 
-            if (SelectedExtensions.Contains(extension))
+            var normalizedExtension = extension.ToLowerInvariant();
+
+            if (SelectedExtensions.Contains(normalizedExtension))
             {
-                SelectedExtensions.Remove(extension);
+                SelectedExtensions.Remove(normalizedExtension);
             }
             else
             {
-                SelectedExtensions.Add(extension);
+                SelectedExtensions.Add(normalizedExtension);
             }
 
             // Update the UI to reflect the change
-            var extensionItem = FileExtensions.FirstOrDefault(ei => ei.Extension == extension);
+            var extensionItem = FileExtensions.FirstOrDefault(ei =>
+                ei.Extension.Equals(normalizedExtension, StringComparison.OrdinalIgnoreCase));
+
             if (extensionItem != null)
             {
-                extensionItem.IsChecked = SelectedExtensions.Contains(extension);
+                extensionItem.IsChecked = SelectedExtensions.Contains(normalizedExtension);
             }
 
             CommandManager.InvalidateRequerySuggested();
-        }
-
-        private void UpdateScanProgress()
-        {
-            // For now, this is a placeholder.
-            // We'll implement proper progress tracking later
-            ScanProgress += 1;
         }
 
         private void LogMessage(string message)
@@ -510,25 +579,17 @@ namespace SourceButler.ViewModels
 
             try
             {
-                // First generate the folder structure
                 outputBuilder.Clear();
                 await Task.Run(() => GenerateFolderStructure(outputBuilder, RootDirectory, selectedPaths, "", true));
 
-                // Now process only the files in selected folders
-                var filesToProcess = new List<string>();
-                foreach (var path in selectedPaths)
-                {
-                    // Only get files directly in the selected directory
-                    filesToProcess.AddRange(
-                        Directory.GetFiles(path)
-                        .Where(f => SelectedExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-                    );
-                }
+                var filesToProcess = selectedPaths
+                    .SelectMany(path => Directory.GetFiles(path))
+                    .Where(f => SelectedExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                    .ToList();
 
                 var totalFiles = filesToProcess.Count;
                 LogMessage($"Found {totalFiles} files to process in selected folders.");
 
-                // Process each file
                 foreach (var file in filesToProcess)
                 {
                     if (await ProcessFileIfSelected(file))
@@ -544,13 +605,6 @@ namespace SourceButler.ViewModels
             }
 
             return processedFiles;
-        }
-
-        private int GetTotalFilesToProcess(List<string> selectedPaths)
-        {
-            return selectedPaths.Sum(path =>
-                Directory.GetFiles(path, "*.*", SearchOption.AllDirectories)  // Changed from AllFiles to AllDirectories
-                    .Count(file => SelectedExtensions.Contains(Path.GetExtension(file).ToLowerInvariant())));
         }
 
         private async Task<bool> ProcessFileIfSelected(string filePath)
@@ -573,7 +627,7 @@ namespace SourceButler.ViewModels
 
                 using var reader = new StreamReader(filePath);
                 var content = await reader.ReadToEndAsync();
-                outputBuilder.AppendLine($"\n{filePath}:\n{content}\n");  // Removed <code> tags
+                outputBuilder.AppendLine($"\n{filePath}:\n{content}\n");
                 return true;
             }
             catch (Exception ex)
@@ -589,13 +643,13 @@ namespace SourceButler.ViewModels
             {
                 using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
                 var buffer = new byte[Math.Min(stream.Length, 1024)];
-                stream.Read(buffer, 0, buffer.Length);
-
-                return buffer.Any(b => b == 0);
+                var bytesRead = stream.Read(buffer, 0, buffer.Length);
+                return buffer.Take(bytesRead).Any(b => b == 0);
             }
-            catch
+            catch (Exception ex)
             {
-                return true; // If we can't read the file, assume it's binary
+                LogMessage($"Error checking if file is binary {filePath}: {ex.Message}");
+                return true;
             }
         }
 
@@ -633,75 +687,62 @@ namespace SourceButler.ViewModels
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
 
-        private int CountFilesToProcess(List<string> selectedPaths)
+        public class ExtensionItem : INotifyPropertyChanged
         {
-            int count = 0;
-            foreach (var selectedPath in selectedPaths)
-            {
-                // Count files in the current directory
-                count += Directory.GetFiles(selectedPath, "*.*", SearchOption.TopDirectoryOnly)
-                    .Count(file => SelectedExtensions.Contains(Path.GetExtension(file).ToLowerInvariant()));
+            private string extension = string.Empty;
+            private int selectedFolderCount;
+            private bool isChecked;
 
-                // Count files in selected subdirectories
-                foreach (var subDir in Directory.GetDirectories(selectedPath, "*", SearchOption.TopDirectoryOnly))
+            public string Extension
+            {
+                get => extension;
+                set
                 {
-                    if (selectedPaths.Contains(subDir))
+                    if (extension != value)
                     {
-                        count += Directory.GetFiles(subDir, "*.*", SearchOption.AllDirectories)
-                            .Count(file => SelectedExtensions.Contains(Path.GetExtension(file).ToLowerInvariant()));
+                        extension = value.ToLowerInvariant(); // Ensure consistent casing
+                        OnPropertyChanged(nameof(Extension));
+                        OnPropertyChanged(nameof(DisplayText));
                     }
                 }
             }
-            return count;
+
+            public int SelectedFolderCount
+            {
+                get => selectedFolderCount;
+                set
+                {
+                    if (selectedFolderCount != value)
+                    {
+                        selectedFolderCount = value;
+                        OnPropertyChanged(nameof(SelectedFolderCount));
+                        OnPropertyChanged(nameof(DisplayText));
+                    }
+                }
+            }
+
+            public bool IsChecked
+            {
+                get => isChecked;
+                set
+                {
+                    if (isChecked != value)
+                    {
+                        isChecked = value;
+                        OnPropertyChanged(nameof(IsChecked));
+                    }
+                }
+            }
+
+            public string DisplayText => $"{Extension} ({SelectedFolderCount} selected)";
+
+            public event PropertyChangedEventHandler? PropertyChanged;
+
+            protected virtual void OnPropertyChanged(string propertyName)
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            }
         }
     }
 
-public class ExtensionItem : INotifyPropertyChanged
-{
-    private string extension = string.Empty;
-    private int selectedFolderCount;
-    private bool isChecked;
-
-    public string Extension
-    {
-        get => extension;
-        set
-        {
-            extension = value;
-            OnPropertyChanged(nameof(Extension));
-            OnPropertyChanged(nameof(DisplayText));
-        }
-    }
-
-    public int SelectedFolderCount
-    {
-        get => selectedFolderCount;
-        set
-        {
-            selectedFolderCount = value;
-            OnPropertyChanged(nameof(SelectedFolderCount));
-            OnPropertyChanged(nameof(DisplayText));
-        }
-    }
-
-    public bool IsChecked
-    {
-        get => isChecked;
-        set
-        {
-            isChecked = value;
-            OnPropertyChanged(nameof(IsChecked));
-        }
-    }
-
-    public string DisplayText => $"{Extension} ({SelectedFolderCount} selected)";
-
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    protected virtual void OnPropertyChanged(string propertyName)
-    {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-    }
 }
-}
-

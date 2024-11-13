@@ -6,7 +6,7 @@
         xmlns:local="clr-namespace:SourceButler"
         xmlns:viewModels="clr-namespace:SourceButler.ViewModels"
         mc:Ignorable="d"
-        Title="Source Butler" Height="600" Width="800"
+        Title="Source Butler" Height="720" Width="1024"
         WindowStartupLocation="CenterScreen">
 
     <Window.DataContext>
