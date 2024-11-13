@@ -1,8 +1,6 @@
 # SourceButler
 
-SourceButler is a .NET 8 application designed to help you process source code files within a directory structure for usage in Large Language Models (LLMs) like ChatGPT, Claude, and others. It allows you to select specific folders and file extensions, scan and process files, and output the collected data into a structured text file suitable for LLM consumption.
-
-Note: Only the compiled stand-alone binary for Windows is provided in the releases, as that is my primary development environment. If you require the application for another operating system, please build it from the source code provided.
+SourceButler is a Windows .NET 8 application designed to help you process source code files within a directory structure for usage in Large Language Models (LLMs) like ChatGPT, Claude, and others. It allows you to select specific folders and file extensions, scan and process files, and output the collected data into a structured text file suitable for LLM consumption.
 
 ![image](https://github.com/user-attachments/assets/eb63b4f6-8a31-4157-a967-898a1a84e2ab)
 
