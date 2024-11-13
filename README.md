@@ -4,6 +4,9 @@ SourceButler is a .NET 8 application designed to help you process source code fi
 
 Note: Only the compiled stand-alone binary for Windows is provided in the releases, as that is my primary development environment. If you require the application for another operating system, please build it from the source code provided.
 
+![image](https://github.com/user-attachments/assets/eb63b4f6-8a31-4157-a967-898a1a84e2ab)
+
+
 ## Table of Contents
 
 - [Features](#features)
